@@ -12,7 +12,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Configuração de timeouts
+// Configuração de timeouts e constantes
 const (
 	APITimeout   = 200 * time.Millisecond
 	DBTimeout    = 10 * time.Millisecond
@@ -20,7 +20,7 @@ const (
 	QuotesAPIURL = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
 )
 
-// Estrutura para representar a resposta da API
+// Estruturas para modelar a API e a cotação
 type Quote struct {
 	Bid string `json:"bid"`
 }
@@ -29,7 +29,7 @@ type APIResponse struct {
 	USDBRL Quote `json:"USDBRL"`
 }
 
-// fetchDollarQuote busca a cotação do dólar usando um contexto com timeout
+// fetchDollarQuote busca a cotação do dólar
 func fetchDollarQuote(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, QuotesAPIURL, nil)
 	if err != nil {
@@ -55,7 +55,7 @@ func fetchDollarQuote(ctx context.Context) (string, error) {
 	return apiResponse.USDBRL.Bid, nil
 }
 
-// saveQuoteToDatabase salva a cotação no banco de dados com um contexto de timeout
+// saveQuoteToDatabase salva a cotação no banco de dados
 func saveQuoteToDatabase(ctx context.Context, db *sql.DB, bid string) error {
 	query := `INSERT INTO quotes (bid, timestamp) VALUES (?, ?)`
 	stmt, err := db.Prepare(query)
@@ -72,7 +72,7 @@ func saveQuoteToDatabase(ctx context.Context, db *sql.DB, bid string) error {
 	return nil
 }
 
-// handleQuote processa a solicitação do cliente para obter a cotação
+// handleQuote processa a requisição HTTP para buscar e salvar a cotação
 func handleQuote(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	ctx := r.Context()
 
@@ -102,6 +102,7 @@ func handleQuote(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	json.NewEncoder(w).Encode(map[string]string{"bid": bid})
 }
 
+// setupDatabase configura e inicializa o banco de dados
 func setupDatabase() (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", "./quotes.db")
 	if err != nil {
@@ -121,18 +122,23 @@ func setupDatabase() (*sql.DB, error) {
 }
 
 func main() {
-	// Configuração do banco de dados
+	// Inicializa o banco de dados
+	log.Println("Configurando banco de dados...")
 	db, err := setupDatabase()
 	if err != nil {
-		log.Fatalf("Erro na configuração do banco de dados: %v", err)
+		log.Fatalf("Erro ao configurar o banco de dados: %v", err)
 	}
 	defer db.Close()
 
-	// Configuração do servidor HTTP
+	// Configura o servidor HTTP
+	log.Println("Iniciando servidor HTTP...")
 	http.HandleFunc("/cotacao", func(w http.ResponseWriter, r *http.Request) {
 		handleQuote(w, r, db)
 	})
 
-	log.Printf("Servidor iniciado na porta %s...", ServerPort)
-	log.Fatal(http.ListenAndServe(ServerPort, nil))
+	// Inicia o servidor
+	log.Printf("Servidor rodando na porta %s", ServerPort)
+	if err := http.ListenAndServe(ServerPort, nil); err != nil {
+		log.Fatalf("Erro ao iniciar servidor: %v", err)
+	}
 }
