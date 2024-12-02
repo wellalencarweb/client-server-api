@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -12,59 +13,67 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Configuração de timeouts e constantes
+// Configurações e constantes
 const (
-	APITimeout   = 200 * time.Millisecond
-	DBTimeout    = 10 * time.Millisecond
-	ServerPort   = ":8080"
-	QuotesAPIURL = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
+	QuotesAPIURL          = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
+	ServerPort            = ":8080"
+	QuotesFetchTimeout    = 200 * time.Millisecond
+	DatabaseInsertTimeout = 10 * time.Millisecond
+	DatabaseFile          = "quotes.db"
 )
 
-// Estruturas para modelar a API e a cotação
-type Quote struct {
-	Bid string `json:"bid"`
+// Logger centralizado
+func logError(err error, msg string) {
+	log.Printf("[ERRO] %s: %v", msg, err)
 }
 
-type APIResponse struct {
-	USDBRL Quote `json:"USDBRL"`
+func logInfo(msg string) {
+	log.Printf("[INFO] %s", msg)
 }
 
-// fetchDollarQuote busca a cotação do dólar
-func fetchDollarQuote(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, QuotesAPIURL, nil)
+// Fetcher interface para abstrair requisições HTTP
+type Fetcher interface {
+	Fetch(ctx context.Context, url string) ([]byte, error)
+}
+
+type HTTPFetcher struct{}
+
+// Fetch faz a requisição HTTP
+func (f *HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("erro ao criar requisição: %w", err)
+		return nil, fmt.Errorf("erro ao criar requisição: %w", err)
 	}
 
 	client := http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("erro ao fazer requisição: %w", err)
+		return nil, fmt.Errorf("erro ao realizar requisição: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status da API não OK: %d", resp.StatusCode)
+		return nil, fmt.Errorf("status não OK: %d", resp.StatusCode)
 	}
 
-	var apiResponse APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
-		return "", fmt.Errorf("erro ao decodificar resposta: %w", err)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao ler resposta: %w", err)
 	}
 
-	return apiResponse.USDBRL.Bid, nil
+	return body, nil
 }
 
-// saveQuoteToDatabase salva a cotação no banco de dados
+// saveQuoteToDatabase insere a cotação no banco de dados
 func saveQuoteToDatabase(ctx context.Context, db *sql.DB, bid string) error {
-	query := `INSERT INTO quotes (bid, timestamp) VALUES (?, ?)`
+	query := "INSERT INTO quotes (bid, created_at) VALUES (?, ?)"
 	stmt, err := db.Prepare(query)
 	if err != nil {
 		return fmt.Errorf("erro ao preparar query: %w", err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.ExecContext(ctx, bid, time.Now().Unix())
+	_, err = stmt.ExecContext(ctx, bid, time.Now())
 	if err != nil {
 		return fmt.Errorf("erro ao executar query: %w", err)
 	}
@@ -72,47 +81,60 @@ func saveQuoteToDatabase(ctx context.Context, db *sql.DB, bid string) error {
 	return nil
 }
 
-// handleQuote processa a requisição HTTP para buscar e salvar a cotação
-func handleQuote(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-	ctx := r.Context()
+// handleQuote lida com requisições HTTP para o endpoint /cotacao
+func handleQuote(fetcher Fetcher, db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), QuotesFetchTimeout)
+		defer cancel()
 
-	// Busca a cotação do dólar com timeout
-	apiCtx, cancelAPICtx := context.WithTimeout(ctx, APITimeout)
-	defer cancelAPICtx()
+		body, err := fetcher.Fetch(ctx, QuotesAPIURL)
+		if err != nil {
+			logError(err, "Falha ao buscar cotação")
+			http.Error(w, "Erro ao buscar cotação", http.StatusInternalServerError)
+			return
+		}
 
-	bid, err := fetchDollarQuote(apiCtx)
-	if err != nil {
-		log.Printf("Erro ao buscar cotação: %v", err)
-		http.Error(w, "Erro ao buscar cotação", http.StatusInternalServerError)
-		return
+		var data map[string]map[string]string
+		if err := json.Unmarshal(body, &data); err != nil {
+			logError(err, "Falha ao decodificar resposta")
+			http.Error(w, "Erro no servidor", http.StatusInternalServerError)
+			return
+		}
+
+		bid, ok := data["USDBRL"]["bid"]
+		if !ok {
+			err := fmt.Errorf("campo 'bid' não encontrado na resposta")
+			logError(err, "Falha na validação de dados")
+			http.Error(w, "Erro ao processar cotação", http.StatusInternalServerError)
+			return
+		}
+
+		dbCtx, dbCancel := context.WithTimeout(ctx, DatabaseInsertTimeout)
+		defer dbCancel()
+
+		if err := saveQuoteToDatabase(dbCtx, db, bid); err != nil {
+			logError(err, "Falha ao salvar cotação no banco")
+			http.Error(w, "Erro ao salvar cotação", http.StatusInternalServerError)
+			return
+		}
+
+		response := map[string]string{"bid": bid}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 	}
-
-	// Salva a cotação no banco de dados com timeout
-	dbCtx, cancelDBCtx := context.WithTimeout(ctx, DBTimeout)
-	defer cancelDBCtx()
-
-	if err := saveQuoteToDatabase(dbCtx, db, bid); err != nil {
-		log.Printf("Erro ao salvar no banco: %v", err)
-		http.Error(w, "Erro ao salvar no banco", http.StatusInternalServerError)
-		return
-	}
-
-	// Retorna a cotação para o cliente
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"bid": bid})
 }
 
-// setupDatabase configura e inicializa o banco de dados
 func setupDatabase() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", "./quotes.db")
+	db, err := sql.Open("sqlite3", DatabaseFile)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao conectar ao banco: %w", err)
+		return nil, fmt.Errorf("erro ao abrir banco de dados: %w", err)
 	}
 
-	query := `CREATE TABLE IF NOT EXISTS quotes (
-		id INTEGER PRIMARY KEY,
-		bid TEXT,
-		timestamp INTEGER
+	query := `
+	CREATE TABLE IF NOT EXISTS quotes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		bid TEXT NOT NULL,
+		created_at DATETIME NOT NULL
 	)`
 	if _, err := db.Exec(query); err != nil {
 		return nil, fmt.Errorf("erro ao criar tabela: %w", err)
@@ -122,23 +144,17 @@ func setupDatabase() (*sql.DB, error) {
 }
 
 func main() {
-	// Inicializa o banco de dados
-	log.Println("Configurando banco de dados...")
+	logInfo("Iniciando servidor...")
+
 	db, err := setupDatabase()
 	if err != nil {
-		log.Fatalf("Erro ao configurar o banco de dados: %v", err)
+		log.Fatalf("[ERRO] Falha ao configurar banco de dados: %v", err)
 	}
 	defer db.Close()
 
-	// Configura o servidor HTTP
-	log.Println("Iniciando servidor HTTP...")
-	http.HandleFunc("/cotacao", func(w http.ResponseWriter, r *http.Request) {
-		handleQuote(w, r, db)
-	})
+	fetcher := &HTTPFetcher{}
+	http.HandleFunc("/cotacao", handleQuote(fetcher, db))
 
-	// Inicia o servidor
-	log.Printf("Servidor rodando na porta %s", ServerPort)
-	if err := http.ListenAndServe(ServerPort, nil); err != nil {
-		log.Fatalf("Erro ao iniciar servidor: %v", err)
-	}
+	logInfo("Servidor ouvindo na porta 8080")
+	log.Fatal(http.ListenAndServe(ServerPort, nil))
 }
