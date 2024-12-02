@@ -1,0 +1,17 @@
+---
+config:
+  theme: base
+---
+sequenceDiagram
+    participant Client
+    participant Server
+    participant QuotesAPI
+    participant Database
+    Client->>Server: HTTP GET /cotacao (com contexto)
+    Server->>QuotesAPI: Fetch cotação (com contexto)
+    QuotesAPI-->>Server: Resposta JSON (cotação USD/BRL)
+    Server->>Server: Valida resposta da QuotesAPI
+    Server->>Database: Insere cotação no banco (com contexto)
+    Database-->>Server: Confirmação de inserção
+    Server-->>Client: JSON { "bid": "5.973" }
+    Client->>Client: Salva cotação em cotacao.txt
