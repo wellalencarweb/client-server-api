@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -11,6 +12,15 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// Configuração de timeouts
+const (
+	APITimeout   = 200 * time.Millisecond
+	DBTimeout    = 10 * time.Millisecond
+	ServerPort   = ":8080"
+	QuotesAPIURL = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
+)
+
+// Estrutura para representar a resposta da API
 type Quote struct {
 	Bid string `json:"bid"`
 }
@@ -19,45 +29,56 @@ type APIResponse struct {
 	USDBRL Quote `json:"USDBRL"`
 }
 
+// fetchDollarQuote busca a cotação do dólar usando um contexto com timeout
 func fetchDollarQuote(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://economia.awesomeapi.com.br/json/last/USD-BRL", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, QuotesAPIURL, nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("erro ao criar requisição: %w", err)
 	}
 
 	client := http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("erro ao fazer requisição: %w", err)
 	}
 	defer resp.Body.Close()
 
-	var apiResp APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return "", err
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status da API não OK: %d", resp.StatusCode)
 	}
 
-	return apiResp.USDBRL.Bid, nil
+	var apiResponse APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
+		return "", fmt.Errorf("erro ao decodificar resposta: %w", err)
+	}
+
+	return apiResponse.USDBRL.Bid, nil
 }
 
-func saveToDatabase(ctx context.Context, db *sql.DB, bid string) error {
+// saveQuoteToDatabase salva a cotação no banco de dados com um contexto de timeout
+func saveQuoteToDatabase(ctx context.Context, db *sql.DB, bid string) error {
 	query := `INSERT INTO quotes (bid, timestamp) VALUES (?, ?)`
 	stmt, err := db.Prepare(query)
 	if err != nil {
-		return err
+		return fmt.Errorf("erro ao preparar query: %w", err)
 	}
 	defer stmt.Close()
 
 	_, err = stmt.ExecContext(ctx, bid, time.Now().Unix())
-	return err
+	if err != nil {
+		return fmt.Errorf("erro ao executar query: %w", err)
+	}
+
+	return nil
 }
 
+// handleQuote processa a solicitação do cliente para obter a cotação
 func handleQuote(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	ctx := r.Context()
 
-	// Timeout para a API externa
-	apiCtx, cancelAPI := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancelAPI()
+	// Busca a cotação do dólar com timeout
+	apiCtx, cancelAPICtx := context.WithTimeout(ctx, APITimeout)
+	defer cancelAPICtx()
 
 	bid, err := fetchDollarQuote(apiCtx)
 	if err != nil {
@@ -66,11 +87,11 @@ func handleQuote(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		return
 	}
 
-	// Timeout para o banco de dados
-	dbCtx, cancelDB := context.WithTimeout(ctx, 10*time.Millisecond)
-	defer cancelDB()
+	// Salva a cotação no banco de dados com timeout
+	dbCtx, cancelDBCtx := context.WithTimeout(ctx, DBTimeout)
+	defer cancelDBCtx()
 
-	if err := saveToDatabase(dbCtx, db, bid); err != nil {
+	if err := saveQuoteToDatabase(dbCtx, db, bid); err != nil {
 		log.Printf("Erro ao salvar no banco: %v", err)
 		http.Error(w, "Erro ao salvar no banco", http.StatusInternalServerError)
 		return
@@ -81,23 +102,37 @@ func handleQuote(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	json.NewEncoder(w).Encode(map[string]string{"bid": bid})
 }
 
-func main() {
-	// Configuração do banco de dados SQLite
+func setupDatabase() (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", "./quotes.db")
 	if err != nil {
-		log.Fatalf("Erro ao conectar no banco de dados: %v", err)
+		return nil, fmt.Errorf("erro ao conectar ao banco: %w", err)
+	}
+
+	query := `CREATE TABLE IF NOT EXISTS quotes (
+		id INTEGER PRIMARY KEY,
+		bid TEXT,
+		timestamp INTEGER
+	)`
+	if _, err := db.Exec(query); err != nil {
+		return nil, fmt.Errorf("erro ao criar tabela: %w", err)
+	}
+
+	return db, nil
+}
+
+func main() {
+	// Configuração do banco de dados
+	db, err := setupDatabase()
+	if err != nil {
+		log.Fatalf("Erro na configuração do banco de dados: %v", err)
 	}
 	defer db.Close()
 
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS quotes (id INTEGER PRIMARY KEY, bid TEXT, timestamp INTEGER)`)
-	if err != nil {
-		log.Fatalf("Erro ao criar tabela no banco de dados: %v", err)
-	}
-
+	// Configuração do servidor HTTP
 	http.HandleFunc("/cotacao", func(w http.ResponseWriter, r *http.Request) {
 		handleQuote(w, r, db)
 	})
 
-	log.Println("Servidor iniciado na porta 8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Printf("Servidor iniciado na porta %s...", ServerPort)
+	log.Fatal(http.ListenAndServe(ServerPort, nil))
 }
