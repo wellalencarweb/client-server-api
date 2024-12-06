@@ -86,6 +86,19 @@ func setupDatabase(databaseFile string) (*sql.DB, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("erro ao verificar conexão com o banco de dados: %w", err)
 	}
+
+	// Cria a tabela 'quotes' se não existir
+	createTableQuery := `
+	CREATE TABLE IF NOT EXISTS quotes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		bid TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	`
+	if _, err := db.Exec(createTableQuery); err != nil {
+		return nil, fmt.Errorf("erro ao criar tabela no banco de dados: %w", err)
+	}
+
 	return db, nil
 }
 
