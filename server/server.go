@@ -24,9 +24,9 @@ type Config struct {
 }
 
 const (
-	ErrFetchingQuote    = "Erro ao buscar cotação"
-	ErrDecodingResponse = "Erro ao decodificar resposta"
-	ErrDatabaseInsert   = "Erro ao inserir no banco de dados"
+	ErrFetchingQuote    = "erro ao buscar cotação"
+	ErrDecodingResponse = "erro ao decodificar resposta"
+	ErrDatabaseInsert   = "erro ao inserir no banco de dados"
 )
 
 func main() {
@@ -34,12 +34,12 @@ func main() {
 
 	config, err := loadConfig()
 	if err != nil {
-		log.Fatalf("Erro ao carregar configurações: %v", err)
+		log.Fatalf("erro ao carregar configurações: %v", err)
 	}
 
 	db, err := setupDatabase(config.DatabaseFile)
 	if err != nil {
-		log.Fatalf("Erro ao configurar banco de dados: %v", err)
+		log.Fatalf("erro ao configurar banco de dados: %v", err)
 	}
 	defer db.Close()
 
@@ -52,12 +52,12 @@ func main() {
 func loadConfig() (*Config, error) {
 	fetchTimeout, err := time.ParseDuration(getEnv("FETCH_TIMEOUT", "200ms"))
 	if err != nil {
-		return nil, fmt.Errorf("Erro ao parsear FETCH_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("erro ao parsear FETCH_TIMEOUT: %w", err)
 	}
 
 	insertTimeout, err := time.ParseDuration(getEnv("INSERT_TIMEOUT", "10ms"))
 	if err != nil {
-		return nil, fmt.Errorf("Erro ao parsear INSERT_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("erro ao parsear INSERT_TIMEOUT: %w", err)
 	}
 
 	return &Config{
@@ -81,10 +81,10 @@ func getEnv(key, fallback string) string {
 func setupDatabase(databaseFile string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", databaseFile)
 	if err != nil {
-		return nil, fmt.Errorf("Erro ao conectar ao banco de dados: %w", err)
+		return nil, fmt.Errorf("erro ao conectar ao banco de dados: %w", err)
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("Erro ao verificar conexão com o banco de dados: %w", err)
+		return nil, fmt.Errorf("erro ao verificar conexão com o banco de dados: %w", err)
 	}
 	return db, nil
 }
@@ -105,7 +105,7 @@ func handleQuote(config *Config, db *sql.DB) http.HandlerFunc {
 				return
 			}
 			log.Printf("%s: %v", ErrFetchingQuote, err)
-			http.Error(w, "Erro ao buscar cotação", http.StatusInternalServerError)
+			http.Error(w, "erro ao buscar cotação", http.StatusInternalServerError)
 			return
 		}
 
@@ -114,7 +114,7 @@ func handleQuote(config *Config, db *sql.DB) http.HandlerFunc {
 
 		if err := saveQuote(ctx, db, bid); err != nil {
 			log.Printf("%s: %v", ErrDatabaseInsert, err)
-			http.Error(w, "Erro ao salvar cotação no banco", http.StatusInternalServerError)
+			http.Error(w, "erro ao salvar cotação no banco", http.StatusInternalServerError)
 			return
 		}
 
@@ -127,17 +127,17 @@ func handleQuote(config *Config, db *sql.DB) http.HandlerFunc {
 func fetchQuote(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("Erro ao criar requisição: %w", err)
+		return "", fmt.Errorf("erro ao criar requisição: %w", err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("Erro ao executar requisição: %w", err)
+		return "", fmt.Errorf("erro ao executar requisição: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Resposta inesperada da API: %d", resp.StatusCode)
+		return "", fmt.Errorf("resposta inesperada da API: %d", resp.StatusCode)
 	}
 
 	var data map[string]map[string]string
@@ -147,7 +147,7 @@ func fetchQuote(ctx context.Context, url string) (string, error) {
 
 	bid, ok := data["USDBRL"]["bid"]
 	if !ok || bid == "" {
-		return "", errors.New("Campo 'bid' ausente ou inválido na resposta")
+		return "", errors.New("campo 'bid' ausente ou inválido na resposta")
 	}
 	return bid, nil
 }
