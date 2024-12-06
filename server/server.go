@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,8 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 // Config armazena configurações do servidor
@@ -20,13 +20,19 @@ type Config struct {
 	QuotesAPIURL  string
 	FetchTimeout  time.Duration
 	InsertTimeout time.Duration
-	DatabaseFile  string
+}
+
+// Quote representa o modelo da tabela de cotações
+type Quote struct {
+	ID        uint      `gorm:"primaryKey"`
+	Bid       string    `gorm:"not null"`
+	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
 const (
-	ErrFetchingQuote    = "erro ao buscar cotação"
-	ErrDecodingResponse = "erro ao decodificar resposta"
-	ErrDatabaseInsert   = "erro ao inserir no banco de dados"
+	ErrFetchingQuote    = "Erro ao buscar cotação"
+	ErrDecodingResponse = "Erro ao decodificar resposta"
+	ErrDatabaseInsert   = "Erro ao inserir no banco de dados"
 )
 
 func main() {
@@ -34,14 +40,13 @@ func main() {
 
 	config, err := loadConfig()
 	if err != nil {
-		log.Fatalf("erro ao carregar configurações: %v", err)
+		log.Fatalf("Erro ao carregar configurações: %v", err)
 	}
 
-	db, err := setupDatabase(config.DatabaseFile)
+	db, err := setupDatabase()
 	if err != nil {
-		log.Fatalf("erro ao configurar banco de dados: %v", err)
+		log.Fatalf("Erro ao configurar banco de dados: %v", err)
 	}
-	defer db.Close()
 
 	http.HandleFunc("/cotacao", handleQuote(config, db))
 	log.Printf("Servidor ouvindo em %s", config.ServerAddress)
@@ -52,12 +57,12 @@ func main() {
 func loadConfig() (*Config, error) {
 	fetchTimeout, err := time.ParseDuration(getEnv("FETCH_TIMEOUT", "200ms"))
 	if err != nil {
-		return nil, fmt.Errorf("erro ao parsear FETCH_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("Erro ao parsear FETCH_TIMEOUT: %w", err)
 	}
 
 	insertTimeout, err := time.ParseDuration(getEnv("INSERT_TIMEOUT", "10ms"))
 	if err != nil {
-		return nil, fmt.Errorf("erro ao parsear INSERT_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("Erro ao parsear INSERT_TIMEOUT: %w", err)
 	}
 
 	return &Config{
@@ -65,7 +70,6 @@ func loadConfig() (*Config, error) {
 		QuotesAPIURL:  getEnv("QUOTES_API_URL", "https://economia.awesomeapi.com.br/json/last/USD-BRL"),
 		FetchTimeout:  fetchTimeout,
 		InsertTimeout: insertTimeout,
-		DatabaseFile:  getEnv("DATABASE_FILE", "quotes.db"),
 	}, nil
 }
 
@@ -77,33 +81,23 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-// setupDatabase configura a conexão com o banco de dados
-func setupDatabase(databaseFile string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", databaseFile)
+// setupDatabase configura o banco de dados e aplica as migrações
+func setupDatabase() (*gorm.DB, error) {
+	db, err := gorm.Open(sqlite.Open("quotes.db"), &gorm.Config{})
 	if err != nil {
-		return nil, fmt.Errorf("erro ao conectar ao banco de dados: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("erro ao verificar conexão com o banco de dados: %w", err)
+		return nil, fmt.Errorf("Erro ao conectar ao banco de dados: %w", err)
 	}
 
-	// Cria a tabela 'quotes' se não existir
-	createTableQuery := `
-	CREATE TABLE IF NOT EXISTS quotes (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		bid TEXT NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	`
-	if _, err := db.Exec(createTableQuery); err != nil {
-		return nil, fmt.Errorf("erro ao criar tabela no banco de dados: %w", err)
+	// AutoMigrate para criar ou atualizar a tabela de cotações
+	if err := db.AutoMigrate(&Quote{}); err != nil {
+		return nil, fmt.Errorf("Erro ao realizar migração no banco de dados: %w", err)
 	}
 
 	return db, nil
 }
 
 // handleQuote processa requisições para o endpoint /cotacao
-func handleQuote(config *Config, db *sql.DB) http.HandlerFunc {
+func handleQuote(config *Config, db *gorm.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Recebendo requisição para /cotacao")
 
@@ -118,7 +112,7 @@ func handleQuote(config *Config, db *sql.DB) http.HandlerFunc {
 				return
 			}
 			log.Printf("%s: %v", ErrFetchingQuote, err)
-			http.Error(w, "erro ao buscar cotação", http.StatusInternalServerError)
+			http.Error(w, "Erro ao buscar cotação", http.StatusInternalServerError)
 			return
 		}
 
@@ -127,7 +121,7 @@ func handleQuote(config *Config, db *sql.DB) http.HandlerFunc {
 
 		if err := saveQuote(ctx, db, bid); err != nil {
 			log.Printf("%s: %v", ErrDatabaseInsert, err)
-			http.Error(w, "erro ao salvar cotação no banco", http.StatusInternalServerError)
+			http.Error(w, "Erro ao salvar cotação no banco", http.StatusInternalServerError)
 			return
 		}
 
@@ -140,17 +134,17 @@ func handleQuote(config *Config, db *sql.DB) http.HandlerFunc {
 func fetchQuote(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("erro ao criar requisição: %w", err)
+		return "", fmt.Errorf("Erro ao criar requisição: %w", err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("erro ao executar requisição: %w", err)
+		return "", fmt.Errorf("Erro ao executar requisição: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("resposta inesperada da API: %d", resp.StatusCode)
+		return "", fmt.Errorf("Resposta inesperada da API: %d", resp.StatusCode)
 	}
 
 	var data map[string]map[string]string
@@ -160,14 +154,16 @@ func fetchQuote(ctx context.Context, url string) (string, error) {
 
 	bid, ok := data["USDBRL"]["bid"]
 	if !ok || bid == "" {
-		return "", errors.New("campo 'bid' ausente ou inválido na resposta")
+		return "", errors.New("Campo 'bid' ausente ou inválido na resposta")
 	}
 	return bid, nil
 }
 
 // saveQuote insere a cotação no banco de dados
-func saveQuote(ctx context.Context, db *sql.DB, bid string) error {
-	query := "INSERT INTO quotes (bid, created_at) VALUES (?, datetime('now'))"
-	_, err := db.ExecContext(ctx, query, bid)
-	return err
+func saveQuote(ctx context.Context, db *gorm.DB, bid string) error {
+	quote := Quote{Bid: bid}
+	if err := db.WithContext(ctx).Create(&quote).Error; err != nil {
+		return err
+	}
+	return nil
 }
