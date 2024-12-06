@@ -26,7 +26,7 @@ type Config struct {
 type Quote struct {
 	ID        uint      `gorm:"primaryKey"`
 	Bid       string    `gorm:"not null"`
-	CreatedAt time.Time `gorm:"autoCreateTime"`
+	CreatedAt time.Time `gorm:"autoCreateTime;not null"`
 }
 
 const (
@@ -35,34 +35,43 @@ const (
 	ErrDatabaseInsert   = "Erro ao inserir no banco de dados"
 )
 
+// main inicializa o servidor, carregando as configurações e configurando o banco de dados.
+// Ele define o endpoint HTTP para tratar requisições de cotação e inicia o servidor.
 func main() {
 	log.Println("Iniciando servidor...")
 
 	config, err := loadConfig()
 	if err != nil {
 		log.Fatalf("Erro ao carregar configurações: %v", err)
+		return
 	}
 
 	db, err := setupDatabase()
 	if err != nil {
 		log.Fatalf("Erro ao configurar banco de dados: %v", err)
+		return
 	}
 
 	http.HandleFunc("/cotacao", handleQuote(config, db))
 	log.Printf("Servidor ouvindo em %s", config.ServerAddress)
-	log.Fatal(http.ListenAndServe(config.ServerAddress, nil))
+
+	if err := http.ListenAndServe(config.ServerAddress, nil); err != nil {
+		log.Fatalf("Erro ao iniciar servidor: %v", err)
+	}
 }
 
 // loadConfig carrega as configurações do ambiente ou valores padrão
 func loadConfig() (*Config, error) {
-	fetchTimeout, err := time.ParseDuration(getEnv("FETCH_TIMEOUT", "200ms"))
+	fetchTimeoutStr := getEnv("FETCH_TIMEOUT", "200ms")
+	fetchTimeout, err := time.ParseDuration(fetchTimeoutStr)
 	if err != nil {
-		return nil, fmt.Errorf("Erro ao parsear FETCH_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("erro ao parsear FETCH_TIMEOUT (%s): %w", fetchTimeoutStr, err)
 	}
 
-	insertTimeout, err := time.ParseDuration(getEnv("INSERT_TIMEOUT", "10ms"))
+	insertTimeoutStr := getEnv("INSERT_TIMEOUT", "10ms")
+	insertTimeout, err := time.ParseDuration(insertTimeoutStr)
 	if err != nil {
-		return nil, fmt.Errorf("Erro ao parsear INSERT_TIMEOUT: %w", err)
+		return nil, fmt.Errorf("erro ao parsear INSERT_TIMEOUT (%s): %w", insertTimeoutStr, err)
 	}
 
 	return &Config{
@@ -75,22 +84,26 @@ func loadConfig() (*Config, error) {
 
 // getEnv retorna o valor de uma variável de ambiente ou um fallback
 func getEnv(key, fallback string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
+	value, exists := os.LookupEnv(key)
+	if !exists {
+		return fallback
 	}
-	return fallback
+	return value
 }
 
 // setupDatabase configura o banco de dados e aplica as migrações
 func setupDatabase() (*gorm.DB, error) {
 	db, err := gorm.Open(sqlite.Open("quotes.db"), &gorm.Config{})
 	if err != nil {
-		return nil, fmt.Errorf("Erro ao conectar ao banco de dados: %w", err)
+		return nil, fmt.Errorf("erro ao conectar ao banco de dados: %w", err)
 	}
 
-	// AutoMigrate para criar ou atualizar a tabela de cotações
+	if db == nil {
+		return nil, errors.New("banco de dados não inicializado corretamente")
+	}
+
 	if err := db.AutoMigrate(&Quote{}); err != nil {
-		return nil, fmt.Errorf("Erro ao realizar migração no banco de dados: %w", err)
+		return nil, fmt.Errorf("erro ao realizar migração no banco de dados: %w", err)
 	}
 
 	return db, nil
@@ -100,6 +113,15 @@ func setupDatabase() (*gorm.DB, error) {
 func handleQuote(config *Config, db *gorm.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Recebendo requisição para /cotacao")
+
+		if config == nil {
+			http.Error(w, "Configuração do servidor ausente", http.StatusInternalServerError)
+			return
+		}
+		if db == nil {
+			http.Error(w, "Banco de dados não inicializado", http.StatusInternalServerError)
+			return
+		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), config.FetchTimeout)
 		defer cancel()
@@ -126,7 +148,10 @@ func handleQuote(config *Config, db *gorm.DB) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"bid": bid})
+		if err := json.NewEncoder(w).Encode(map[string]string{"bid": bid}); err != nil {
+			log.Printf("Erro ao codificar resposta JSON: %v", err)
+			http.Error(w, "Erro interno do servidor", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -134,17 +159,17 @@ func handleQuote(config *Config, db *gorm.DB) http.HandlerFunc {
 func fetchQuote(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("Erro ao criar requisição: %w", err)
+		return "", fmt.Errorf("erro ao criar requisição: %w", err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("Erro ao executar requisição: %w", err)
+		return "", fmt.Errorf("erro ao executar requisição: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Resposta inesperada da API: %d", resp.StatusCode)
+		return "", fmt.Errorf("resposta inesperada da API: %d", resp.StatusCode)
 	}
 
 	var data map[string]map[string]string
@@ -154,13 +179,17 @@ func fetchQuote(ctx context.Context, url string) (string, error) {
 
 	bid, ok := data["USDBRL"]["bid"]
 	if !ok || bid == "" {
-		return "", errors.New("Campo 'bid' ausente ou inválido na resposta")
+		return "", errors.New("campo 'bid' ausente ou inválido na resposta")
 	}
 	return bid, nil
 }
 
 // saveQuote insere a cotação no banco de dados
 func saveQuote(ctx context.Context, db *gorm.DB, bid string) error {
+	if db == nil {
+		return errors.New("banco de dados nulo")
+	}
+
 	quote := Quote{Bid: bid}
 	if err := db.WithContext(ctx).Create(&quote).Error; err != nil {
 		return err
