@@ -3,15 +3,31 @@ config:
   theme: base
 ---
 sequenceDiagram
-    participant Client
-    participant Server
-    participant QuotesAPI
-    participant Database
-    Client->>Server: HTTP GET /cotacao (com contexto)
-    Server->>QuotesAPI: Fetch cotação (com contexto)
-    QuotesAPI-->>Server: Resposta JSON (cotação USD/BRL)
-    Server->>Server: Valida resposta da QuotesAPI
-    Server->>Database: Insere cotação no banco (com contexto)
-    Database-->>Server: Confirmação de inserção
-    Server-->>Client: JSON { "bid": "5.973" }
-    Client->>Client: Salva cotação em cotacao.txt
+    participant Client as client.go
+    participant Server as server.go
+    participant API as API Dólar (AwesomeAPI)
+    participant DB as Banco de Dados (SQLite)
+    Client->>Server: Requisição HTTP GET /cotacao
+    alt Timeout ou erro no cliente
+        Server-->>Client: Timeout na requisição
+        Client->>LogFile: Salva erro em cotacao_log.txt
+    else Requisição válida
+        Server->>API: Requisição HTTP GET (Cotação do dólar)
+        alt Timeout ou erro na API
+            API-->>Server: Timeout ou erro
+            Server-->>Client: Timeout na requisição à API
+            Client->>LogFile: Salva erro em cotacao_log.txt
+        else Resposta válida da API
+            API-->>Server: {"USDBRL": {"bid": "5.34"}}
+            Server->>DB: Insere cotação no banco
+            alt Erro ao salvar no banco
+                DB-->>Server: Erro
+                Server-->>Client: Erro interno (salvando cotação)
+                Client->>LogFile: Salva erro em cotacao_log.txt
+            else Sucesso ao salvar no banco
+                DB-->>Server: OK
+                Server-->>Client: {"bid": "5.34"}
+                Client->>File: Salva "Dólar: 5.34" em cotacao.txt
+            end
+        end
+    end
