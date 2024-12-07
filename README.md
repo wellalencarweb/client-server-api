@@ -1,5 +1,32 @@
 # client-server-api
 
+## Como Executar
+
+Para executar este projeto, siga as etapas abaixo:
+
+1. Clone o repositório:
+   ```
+   git clone https://github.com/wellalencarweb/client-server-api.git
+   ```
+
+2. Navegue para o diretório do projeto:
+   ```
+   cd client-server-api
+   ```
+
+3. Execute o servidor:
+   ```
+   cd server
+   go run server.go
+   ```
+
+4. Execute o cliente:
+   ```
+   cd client
+   go run client.go
+   ```
+
+
 ### Desafio Pós Go-Expert 
 
 Neste desafio vamos aplicar o que aprendemos sobre webserver http, contextos,
