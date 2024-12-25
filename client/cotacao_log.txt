@@ -1,2 +1,1 @@
-2024-12-06T21:41:15-03:00: Resposta inválida do servidor. Status: 504, Mensagem: Timeout na requisição à API
-
+2024-12-25T15:50:40-03:00: timeout na requisição ao servidor: Get "http://localhost:8080/cotacao": context deadline exceeded
